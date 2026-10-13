@@ -90,12 +90,32 @@ def generate_clauses(n, variables):
     return clauses, config['new_vars']
 
 def solve_n_queens(n):
+    if type(n) is not int or n < 1:
+        raise ValueError("n must be a positive integer")
     variables = generate_variables(n)
     clauses, new_vars_count = generate_clauses(n, variables)
-    solver = Glucose3()
-    for clause in clauses:
-        solver.add_clause(clause)
-    if solver.solve():
-        model = solver.get_model()
-        return [[int(model[i * n + j] > 0) for j in range(n)] for i in range(n)], n**2 + new_vars_count, len(clauses)
-    return None, 0, 0
+    vars_count = n * n + new_vars_count
+    with Glucose3(bootstrap_with=clauses) as solver:
+        if not solver.solve():
+            return None, vars_count, len(clauses)
+        positive = {literal for literal in solver.get_model() if literal > 0}
+        solution = [[int(variables[i][j] in positive) for j in range(n)]
+                    for i in range(n)]
+        return solution, vars_count, len(clauses)
+
+if __name__ == "__main__":
+    import argparse
+    from time import perf_counter
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--n", type=int, default=8)
+    args = parser.parse_args()
+    start = perf_counter()
+    solution, variables_count, clauses_count = solve_n_queens(args.n)
+    elapsed = perf_counter() - start
+    print("SAT" if solution is not None else "UNSAT")
+    print(f"Variables: {variables_count}, Clauses: {clauses_count}")
+    print(f"Time: {elapsed:.6f} s")
+    if solution is not None and args.n <= 20:
+        for row in solution:
+            print(" ".join("Q" if cell else "." for cell in row))
