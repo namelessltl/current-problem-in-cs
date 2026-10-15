@@ -1,8 +1,5 @@
 import math
-from pysat.solvers import Glucose3
 
-def generate_variables(n):
-    return [[i * n + j + 1 for j in range(n)] for i in range(n)]
 
 def binary_encoding(clauses, target, new_variables):
     for i in range(len(new_variables)):
@@ -14,10 +11,10 @@ def generate_binary_combinations(n):
 def generate_new_variables(end, length):
     return [i for i in range(end + 1, end + math.ceil(math.log(length, 2)) + 1)]
 
-def at_most_one(clauses, new_variables, variables, n):
-    if len(variables) < 2: return
-    temp_new_variables = generate_new_variables(n ** 2 + len(new_variables), len(variables))
-    new_variables.extend(temp_new_variables)
+def encode_amo(clauses, variables, end):
+    if len(variables) < 2:
+        return []
+    temp_new_variables = generate_new_variables(end, len(variables))
     binary_combinations = generate_binary_combinations(len(temp_new_variables))
 
     for i in range(len(variables)):
@@ -27,59 +24,21 @@ def at_most_one(clauses, new_variables, variables, n):
             index = len(combination) - j - 1
             temp_clause.append(temp_new_variables[index] if int(combination[j]) == 1 else -temp_new_variables[index])
         binary_encoding(clauses, variables[i], temp_clause)
+    return temp_new_variables
+
+
+def at_most_one(clauses, new_variables, variables, n):
+    # Binary dùng riêng thì lưu các biến phụ vào danh sách.
+    allocated = encode_amo(clauses, variables, n ** 2 + len(new_variables))
+    new_variables.extend(allocated)
+
+
+def binary_AMO(clauses, variables, config, n):
+    # Commander/Product dùng bộ đếm; vẫn gọi cùng một phần mã hóa ở trên.
+    allocated = encode_amo(clauses, variables, n ** 2 + config['new_vars'])
+    config['new_vars'] += len(allocated)
 
 def exactly_one(clauses, new_variables, variables, n):
+    # Clause ALO yêu cầu ít nhất một biến đúng; thêm AMO để được đúng một.
     clauses.append(variables)
     at_most_one(clauses, new_variables, variables, n)
-
-def generate_clauses(n, variables):
-    clauses, new_variables = [], []
-    for i in range(n):
-        exactly_one(clauses, new_variables, variables[i], n)
-    for j in range(n):
-        exactly_one(clauses, new_variables, [variables[i][j] for i in range(n)], n)
-
-    for i in range(1, n):
-        diagonal = [variables[i-k][k] for k in range(n) if 0 <= i-k < n and 0 <= k < n]
-        at_most_one(clauses, new_variables, diagonal, n)
-    for j in range(1, n - 1):
-        diagonal = [variables[n-1-k][j+k] for k in range(n) if 0 <= n-1-k < n and 0 <= j+k < n]
-        at_most_one(clauses, new_variables, diagonal, n)
-    for i in range(n - 1):
-        diagonal = [variables[i+k][k] for k in range(n) if 0 <= i+k < n and 0 <= k < n]
-        at_most_one(clauses, new_variables, diagonal, n)
-    for j in range(1, n - 1):
-        diagonal = [variables[k][j+k] for k in range(n) if 0 <= k < n and 0 <= j+k < n]
-        at_most_one(clauses, new_variables, diagonal, n)
-    return clauses, new_variables
-
-def solve_n_queens(n):
-    if type(n) is not int or n < 1:
-        raise ValueError("n must be a positive integer")
-    variables = generate_variables(n)
-    clauses, new_vars = generate_clauses(n, variables)
-    vars_count = n * n + len(new_vars)
-    with Glucose3(bootstrap_with=clauses) as solver:
-        if not solver.solve():
-            return None, vars_count, len(clauses)
-        positive = {literal for literal in solver.get_model() if literal > 0}
-        solution = [[int(variables[i][j] in positive) for j in range(n)]
-                    for i in range(n)]
-        return solution, vars_count, len(clauses)
-
-if __name__ == "__main__":
-    import argparse
-    from time import perf_counter
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--n", type=int, default=8)
-    args = parser.parse_args()
-    start = perf_counter()
-    solution, variables_count, clauses_count = solve_n_queens(args.n)
-    elapsed = perf_counter() - start
-    print("SAT" if solution is not None else "UNSAT")
-    print(f"Variables: {variables_count}, Clauses: {clauses_count}")
-    print(f"Time: {elapsed:.6f} s")
-    if solution is not None and args.n <= 20:
-        for row in solution:
-            print(" ".join("Q" if cell else "." for cell in row))

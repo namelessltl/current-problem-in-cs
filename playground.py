@@ -13,20 +13,60 @@ from comparison_solvers import METHODS as COMPARISONS, solve_n_queens, validate_
 SAT_METHODS = {'Sequential': 'sequential', 'Binomial': 'binomial', 'Binary': 'binary', 'Commander': 'commander', 'Product': 'product'}
 METHODS = [*SAT_METHODS, *COMPARISONS]
 
+def generate_variables(n):
+    return [[i * n + j + 1 for j in range(n)] for i in range(n)]
+
+
+def generate_clauses(n, variables, module, method):
+    clauses = []
+    state = [] if method == 'Binary' else {'new_vars': 0}
+
+    def add(group, exactly=False):
+        encode = module.exactly_one if exactly else module.at_most_one
+        if method == 'Binomial':
+            encode(clauses, group)
+        elif method == 'Binary':
+            encode(clauses, state, group, n)
+        else:
+            encode(clauses, group, state, n)
+   
+ # Each row and column must contain exactly one queen.
+    for row in variables:
+        add(row, exactly=True)
+    for col in range(n):
+        add([variables[row][col] for row in range(n)], exactly=True)
+
+    # Preserve the original pairwise clause order for reproducible solving.
+    if method == 'Binomial':
+        for i in range(n):
+            for j in range(n):
+                for k in range(1, n):
+                    if i + k < n and j + k < n:
+                        add([variables[i][j], variables[i + k][j + k]])
+                    if i + k < n and j - k >= 0:
+                        add([variables[i][j], variables[i + k][j - k]])
+        return clauses, 0
+
+    # Diagonals only need at-most-one; empty diagonals are allowed.
+    for i in range(1, n):
+        add([variables[i-k][k] for k in range(n) if 0 <= i-k < n])
+    for j in range(1, n - 1):
+        add([variables[n-1-k][j+k] for k in range(n) if j+k < n])
+    for i in range(n - 1):
+        add([variables[i+k][k] for k in range(n) if i+k < n])
+    for j in range(1, n - 1):
+        add([variables[k][j+k] for k in range(n) if j+k < n])
+    return clauses, len(state) if method == 'Binary' else state['new_vars']
+
+
 def worker(connection, n, method, limit, threads):
     try:
         if method in SAT_METHODS:
             module = importlib.import_module(SAT_METHODS[method])
             from pysat.solvers import Glucose3
             start = perf_counter()
-            variables = module.generate_variables(n)
-            generated = module.generate_clauses(n, variables)
-            if method == 'Binomial':
-                clauses, extra = generated, 0
-            else:
-                clauses, extra = generated
-                if isinstance(extra, list):
-                    extra = len(extra)
+            variables = generate_variables(n)
+            clauses, extra = generate_clauses(n, variables, module, method)
             with Glucose3(bootstrap_with=clauses) as solver:
                 built = perf_counter()
                 sat = solver.solve()
@@ -48,6 +88,7 @@ def worker(connection, n, method, limit, threads):
     connection.close()
 
 def run_one(n, method, limit, threads):
+    # A separate process lets us stop a solver even while native code is running.
     context = mp.get_context('spawn')
     receiver, sender = context.Pipe(duplex=False)
     process = context.Process(target=worker, args=(sender, n, method, limit, threads))
@@ -92,6 +133,7 @@ def run_benchmark(args):
                 for repeat in range(1, args.repeats+1):
                     result = run_one(n, method, args.timeout, args.threads)
                     writer.writerow(dict(N=n, Method=method, Repeat=repeat, **result))
+                    # Keep completed runs on disk if the benchmark is interrupted.
                     stream.flush()
                     print(f"N={n:<4} {method:<12} {result['status']:<11} {result['wall_time']:.4f}s {result.get('detail', '')}", flush=True)
 
