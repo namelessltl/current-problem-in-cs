@@ -13,12 +13,24 @@ from comparison_solvers import METHODS as COMPARISONS, solve_n_queens, validate_
 SAT_METHODS = {'Sequential': 'sequential', 'Binomial': 'binomial', 'Binary': 'binary', 'Commander': 'commander', 'Product': 'product'}
 METHODS = [*SAT_METHODS, *COMPARISONS]
 
+class ClauseList(list):
+    # Count each emitted clause once, without changing the encoding order.
+    def __init__(self, primary_variables):
+        super().__init__()
+        self.primary_variables = primary_variables
+        self.auxiliary_clauses = 0
+
+    def append(self, clause):
+        self.auxiliary_clauses += any(abs(v) > self.primary_variables for v in clause)
+        super().append(clause)
+
+
 def generate_variables(n):
     return [[i * n + j + 1 for j in range(n)] for i in range(n)]
 
 
 def generate_clauses(n, variables, module, method):
-    clauses = []
+    clauses = ClauseList(n*n)
     state = [] if method == 'Binary' else {'new_vars': 0}
 
     def add(group, exactly=False):
@@ -29,8 +41,8 @@ def generate_clauses(n, variables, module, method):
             encode(clauses, state, group, n)
         else:
             encode(clauses, group, state, n)
-   
- # Each row and column must contain exactly one queen.
+
+    # Each row and column must contain exactly one queen.
     for row in variables:
         add(row, exactly=True)
     for col in range(n):
@@ -60,6 +72,7 @@ def generate_clauses(n, variables, module, method):
 
 
 def worker(connection, n, method, limit, threads):
+    stats = {}
     try:
         if method in SAT_METHODS:
             module = importlib.import_module(SAT_METHODS[method])
@@ -67,8 +80,15 @@ def worker(connection, n, method, limit, threads):
             start = perf_counter()
             variables = generate_variables(n)
             clauses, extra = generate_clauses(n, variables, module, method)
+            stats = dict(primary_variables=n*n, auxiliary_variables=extra,
+                         total_variables=n*n+extra, total_clauses=len(clauses),
+                         auxiliary_clauses=clauses.auxiliary_clauses,
+                         primary_only_clauses=len(clauses)-clauses.auxiliary_clauses,
+                         variables=n*n+extra, clauses=len(clauses), counts_complete=True)
+            connection.send({'event': 'progress', **stats})
             with Glucose3(bootstrap_with=clauses) as solver:
                 built = perf_counter()
+                connection.send({'event': 'progress', 'build_time': built-start})
                 sat = solver.solve()
                 solved = perf_counter()
                 positive = {v for v in solver.get_model() if v > 0} if sat else set()
@@ -84,7 +104,7 @@ def worker(connection, n, method, limit, threads):
         result = dict(status='UNAVAILABLE', detail=str(error))
     except Exception as error:
         result = dict(status='ERROR', detail=f'{type(error).__name__}: {error}')
-    connection.send(result)
+    connection.send({'event': 'result', **stats, **result})
     connection.close()
 
 def run_one(n, method, limit, threads):
@@ -95,19 +115,31 @@ def run_one(n, method, limit, threads):
     start = perf_counter()
     process.start()
     sender.close()
+    progress = {'counts_complete': False} if method in SAT_METHODS else {}
+    deadline = start + limit
     try:
-        if receiver.poll(limit):
+        while True:
+            remaining = deadline - perf_counter()
+            if remaining <= 0 or not receiver.poll(max(0, remaining)):
+                result = dict(progress, status='TIMEOUT', detail='Process wall-time limit reached')
+                break
             try:
-                result = receiver.recv()
+                message = receiver.recv()
             except EOFError:
-                result = dict(status='ERROR', detail='Worker exited without a result')
-        else:
-            result = dict(status='TIMEOUT', detail='Process wall-time limit reached')
+                result = dict(progress, status='ERROR', detail='Worker exited without a result')
+                break
+            if message.pop('event') == 'progress':
+                progress.update(message)
+            else:
+                result = {**progress, **message}
+                break
     finally:
-        process.join(timeout=0.2)
         if process.is_alive():
             process.terminate()
-        process.join()
+        process.join(timeout=2)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=2)
         receiver.close()
     result['wall_time'] = perf_counter()-start
     return result
@@ -116,6 +148,7 @@ def run_benchmark(args):
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     metadata = dict(python=platform.python_version(), platform=platform.platform(), processor=platform.processor(), sizes=args.sizes, methods=args.methods, timeout=args.timeout, threads=args.threads, repeats=args.repeats, timing='wall_time includes startup/imports/model/solve/cleanup; total_time excludes process startup; build_time includes solver initialization')
+    metadata['counting'] = 'Counts collected from actual emitted CNF during build; counting overhead included in build_time. Missing means generation did not finish. auxiliary_clauses contains at least one auxiliary literal.'
     metadata['packages'] = {}
     for package in ['python-sat', 'ortools', 'docplex', 'cplex', 'gurobipy']:
         try:
@@ -123,7 +156,7 @@ def run_benchmark(args):
         except PackageNotFoundError:
             metadata['packages'][package] = None
     output.with_suffix('.metadata.json').write_text(json.dumps(metadata, indent=2), encoding='utf-8')
-    fields = ['N', 'Method', 'Repeat', 'status', 'wall_time', 'build_time', 'solve_time', 'total_time', 'variables', 'clauses', 'constraints', 'valid', 'detail']
+    fields = ['N', 'Method', 'Repeat', 'status', 'wall_time', 'build_time', 'solve_time', 'total_time', 'variables', 'clauses', 'constraints', 'primary_variables', 'auxiliary_variables', 'total_variables', 'total_clauses', 'auxiliary_clauses', 'primary_only_clauses', 'counts_complete', 'valid', 'detail']
     with output.open('w', newline='', encoding='utf-8') as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()

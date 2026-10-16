@@ -1,0 +1,30 @@
+{
+  "python": "3.14.6",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "processor": "Intel64 Family 6 Model 154 Stepping 3, GenuineIntel",
+  "sizes": [
+    1,
+    2,
+    3,
+    4,
+    8
+  ],
+  "methods": [
+    "Sequential",
+    "Binomial",
+    "Binary",
+    "Commander",
+    "Product"
+  ],
+  "timeout": 20.0,
+  "threads": 1,
+  "repeats": 1,
+  "timing": "wall_time includes startup/imports/model/solve/cleanup; total_time excludes process startup; build_time includes solver initialization",
+  "packages": {
+    "python-sat": "1.9.dev15",
+    "ortools": "9.15.6755",
+    "docplex": "2.32.264",
+    "cplex": "22.2.0.1",
+    "gurobipy": "13.0.3"
+  }
+}
